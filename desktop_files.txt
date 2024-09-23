@@ -1,0 +1,76 @@
+
+import Conversation from "../models/conversation.model.js";
+import Message from "../models/message.model.js";
+import { getReceiverSocketId, io } from "../socket/socket.js";
+import { huffmanEncode,huffmanDecode } from "../utils/huffman.js"; // Import Huffman encoding function
+
+export const sendMessage = async (req, res, next) => {
+  try {
+    const { message } = req.body;
+    const { id: receiverId } = req.params;
+    const senderId = req.user.id;
+
+    // Encode the message using Huffman coding
+    const { encodedMessage, huffmanTree } = huffmanEncode(message);
+
+    let conversation = await Conversation.findOne({
+      participants: { $all: [senderId, receiverId] },
+    });
+
+    if (!conversation) {
+      conversation = await Conversation.create({
+        participants: [senderId, receiverId],
+      });
+    }
+
+    const newMessage = new Message({
+      senderId,
+      receiverId,
+      message: encodedMessage, // Store the encoded message
+      huffmanTree: JSON.stringify(huffmanTree), // Store the Huffman tree (optional)
+    });
+
+    if (newMessage) {
+      conversation.messages.push(newMessage._id);
+    }
+
+    await Promise.all([conversation.save(), newMessage.save()]);
+
+    // Socket.io functionality
+    const receiverSocketId = getReceiverSocketId(receiverId);
+
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("newMessage", newMessage);
+    }
+
+    res.status(201).json(newMessage);
+  } catch (error) {
+    next(error);
+  }
+};
+
+
+export const getMessage = async (req, res, next) => {
+  try {
+    const { id: userToMessage } = req.params;
+    const senderId = req.user.id;
+
+    const conversation = await Conversation.findOne({
+      participants: { $all: [senderId, userToMessage] },
+    }).populate("messages");
+
+    if (!conversation) {
+      return res.status(200).json([]);
+    }
+
+    const messages = conversation.messages.map(message => {
+      const huffmanTree = JSON.parse(message.huffmanTree); // Parse Huffman tree
+      const decodedMessage = huffmanDecode(message.message, huffmanTree); // Decode the message
+      return { ...message._doc, message: decodedMessage }; // Return the decoded message
+    });
+
+    res.status(200).json(messages);
+  } catch (error) {
+    next(error);
+  }
+};
